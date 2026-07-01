@@ -13,7 +13,8 @@ import com.firefly.befirefly.data.local.entity.GroupMemberEntity
 class ChatRepository(
     private val messageDao: MessageDao,
     private val contactDao: ContactDao,
-    private val groupDao: GroupDao
+    private val groupDao: GroupDao,
+    private val statusDao: com.firefly.befirefly.data.local.dao.StatusDao? = null
 ) {
     fun getMessages(conversationId: String): Flow<List<MessageEntity>> {
         return messageDao.getMessagesForContact(conversationId)
@@ -219,6 +220,10 @@ class ChatRepository(
         contactDao.updateVerified(id, verified)
     }
 
+    suspend fun setBlocked(id: String, blocked: Boolean) {
+        contactDao.updateBlocked(id, blocked)
+    }
+
     // Group Methods
     suspend fun createGroup(groupId: String, name: String, ownerId: String, members: List<String>) {
         val group = GroupEntity(
@@ -235,11 +240,50 @@ class ChatRepository(
         groupDao.insertMembers(memberEntities)
     }
 
+    /** Replace a group's name + full member set (used when a group update arrives over the network). */
+    suspend fun syncGroup(groupId: String, name: String, ownerId: String, members: List<String>) {
+        groupDao.insertGroup(GroupEntity(id = groupId, name = name, ownerId = ownerId, createdTimestamp = System.currentTimeMillis()))
+        groupDao.getGroupMembers(groupId).forEach { groupDao.deleteMember(groupId, it.userId) }
+        groupDao.insertMembers(members.map { GroupMemberEntity(groupId = groupId, userId = it, isAdmin = (it == ownerId)) })
+    }
+
     fun getAllGroups(): Flow<List<GroupEntity>> {
         return groupDao.getAllGroups()
     }
     
     suspend fun getGroupMembers(groupId: String): List<GroupMemberEntity> {
         return groupDao.getGroupMembers(groupId)
+    }
+
+    // --- Status / Stories ---
+    fun getStatuses(): Flow<List<com.firefly.befirefly.data.local.entity.StatusEntity>> =
+        statusDao?.getStatuses() ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun insertStatus(status: com.firefly.befirefly.data.local.entity.StatusEntity) {
+        statusDao?.insertStatus(status)
+    }
+
+    suspend fun deleteExpiredStatuses() {
+        statusDao?.deleteExpired(System.currentTimeMillis())
+    }
+
+    suspend fun getGroup(groupId: String): GroupEntity? = groupDao.getGroupById(groupId)
+
+    suspend fun addGroupMember(groupId: String, userId: String, isAdmin: Boolean = false) {
+        groupDao.insertMember(GroupMemberEntity(groupId = groupId, userId = userId, isAdmin = isAdmin))
+    }
+
+    suspend fun removeGroupMember(groupId: String, userId: String) {
+        groupDao.deleteMember(groupId, userId)
+    }
+
+    suspend fun renameGroup(groupId: String, name: String) {
+        groupDao.updateGroupName(groupId, name)
+    }
+
+    /** Leave/delete a group locally (members cascade) and clear its messages. */
+    suspend fun leaveGroup(groupId: String) {
+        groupDao.deleteGroup(groupId)
+        messageDao.deleteAllForConversation(groupId)
     }
 }

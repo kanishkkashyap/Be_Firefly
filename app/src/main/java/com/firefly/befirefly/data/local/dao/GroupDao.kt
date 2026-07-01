@@ -28,4 +28,13 @@ interface GroupDao {
     
     @Query("SELECT * FROM groups WHERE id = :groupId")
     suspend fun getGroupById(groupId: String): GroupEntity?
+
+    @Query("DELETE FROM group_members WHERE groupId = :groupId AND userId = :userId")
+    suspend fun deleteMember(groupId: String, userId: String)
+
+    @Query("DELETE FROM groups WHERE id = :groupId")
+    suspend fun deleteGroup(groupId: String)
+
+    @Query("UPDATE groups SET name = :name WHERE id = :groupId")
+    suspend fun updateGroupName(groupId: String, name: String)
 }

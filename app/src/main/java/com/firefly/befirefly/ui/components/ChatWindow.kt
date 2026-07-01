@@ -80,7 +80,20 @@ fun ChatWindow(
     initialDraft: String = "",
     onDraftChanged: ((String) -> Unit)? = null,
     onStar: ((Message) -> Unit)? = null,
-    onPin: ((Message) -> Unit)? = null
+    onPin: ((Message) -> Unit)? = null,
+    isGroup: Boolean = false,
+    groupMembers: List<com.firefly.befirefly.ui.screens.GroupMemberUi> = emptyList(),
+    groupIsOwner: Boolean = false,
+    onRenameGroup: ((String) -> Unit)? = null,
+    onAddMember: ((String) -> Unit)? = null,
+    onRemoveMember: ((String) -> Unit)? = null,
+    onLeaveGroup: (() -> Unit)? = null,
+    isBlocked: Boolean = false,
+    onToggleBlock: (() -> Unit)? = null,
+    onShareLocation: (() -> Unit)? = null,
+    onAddSharedContact: ((String, String) -> Unit)? = null,
+    onStartVoiceCall: (() -> Unit)? = null,
+    onStartVideoCall: (() -> Unit)? = null
 ) {
     var messageText by remember(contactPublicKey) { mutableStateOf(initialDraft) }
     var showMenu by remember { mutableStateOf(false) }
@@ -96,6 +109,10 @@ fun ChatWindow(
     var showSearch by remember { mutableStateOf(false) }
     var showDisappearingPicker by remember { mutableStateOf(false) }
     var showVerifySheet by remember { mutableStateOf(false) }
+    var showGroupInfo by remember { mutableStateOf(false) }
+    var showContactProfile by remember { mutableStateOf(false) }
+    var showEmoji by remember { mutableStateOf(false) }
+    var showShareContact by remember { mutableStateOf(false) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
 
     fun deleteLocally(id: Long) {
@@ -190,7 +207,8 @@ fun ChatWindow(
                     AuroraMessageBubble(
                         message = msg, index = index, audioPlayer = audioPlayer,
                         onLongPress = { actionMessage = it },
-                        onDoubleTap = { onReact?.invoke(it, "❤️") }
+                        onDoubleTap = { onReact?.invoke(it, "❤️") },
+                        onAddSharedContact = onAddSharedContact
                     )
                 }
             }
@@ -280,7 +298,12 @@ fun ChatWindow(
                         ) {
                             // Top row
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier.size(40.dp)
+                                        .clip(CircleShape)
+                                        .clickable { if (isGroup) showGroupInfo = true else showContactProfile = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Box(modifier = Modifier.size(40.dp).background(AuroraColors.Teal.copy(alpha = 0.20f), CircleShape).blur(10.dp))
                                     Box(
                                         modifier = Modifier.size(40.dp).background(Brush.linearGradient(listOf(Color(0xFFFF6E40), Color(0xFFFFAB40))), CircleShape),
@@ -352,11 +375,23 @@ fun ChatWindow(
                 }
 
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.background(Color(0xFF1A1F30))) {
+                    if (!isGroup) {
+                        DropdownMenuItem(text = { Text("👤  View profile", color = Color.White) }, onClick = { showMenu = false; showContactProfile = true })
+                        DropdownMenuItem(text = { Text("📞  Voice call", color = Color.White) }, onClick = { showMenu = false; onStartVoiceCall?.invoke() })
+                        DropdownMenuItem(text = { Text("🎥  Video call", color = Color.White) }, onClick = { showMenu = false; onStartVideoCall?.invoke() })
+                    }
+                    if (isGroup) {
+                        DropdownMenuItem(text = { Text("👥  Group info", color = Color.White) }, onClick = { showMenu = false; showGroupInfo = true })
+                    }
                     DropdownMenuItem(text = { Text("🗑️  Clear Chat", color = Color.White) }, onClick = { showMenu = false; onClearChat?.invoke() })
                     DropdownMenuItem(text = { Text("📤  Export Chat", color = Color.White) }, onClick = { showMenu = false; onExportChat?.invoke() })
+                    DropdownMenuItem(text = { Text("📇  Share a contact", color = Color.White) }, onClick = { showMenu = false; showShareContact = true })
                     DropdownMenuItem(text = { Text("🎨  Wallpaper", color = Color.White) }, onClick = { showMenu = false; onWallpaperClick?.invoke() })
                     DropdownMenuItem(text = { Text("⏱️  Disappearing messages", color = Color.White) }, onClick = { showMenu = false; showDisappearingPicker = true })
                     DropdownMenuItem(text = { Text(if (isVerified) "🛡️  Verified ✓" else "🛡️  Verify Contact", color = Color.White) }, onClick = { showMenu = false; showVerifySheet = true })
+                    if (!isGroup) {
+                        DropdownMenuItem(text = { Text(if (isBlocked) "✅  Unblock" else "🚫  Block", color = Color.White) }, onClick = { showMenu = false; onToggleBlock?.invoke() })
+                    }
                 }
             }
 
@@ -366,6 +401,35 @@ fun ChatWindow(
                 modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 80.dp)
             ) {
                 AuroraTypingIndicator()
+            }
+
+            // Emoji picker panel (just above the input)
+            AnimatedVisibility(
+                visible = showEmoji,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp).fillMaxWidth().padding(horizontal = 12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().height(220.dp)
+                        .glassCard(cornerRadius = 16.dp, alpha = 0.12f)
+                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(8.dp)
+                ) {
+                    beFireflyEmojis.chunked(8).forEach { row ->
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            row.forEach { emoji ->
+                                Text(
+                                    emoji,
+                                    fontSize = 24.sp,
+                                    modifier = Modifier.padding(6.dp).clickable {
+                                        messageText += emoji
+                                        onDraftChanged?.invoke(messageText)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // Reply preview bar (sits just above the input)
@@ -511,6 +575,53 @@ fun ChatWindow(
                 )
             }
 
+            // Share-contact picker
+            if (showShareContact) {
+                ForwardPickerDialog(
+                    contacts = contacts,
+                    onDismiss = { showShareContact = false },
+                    onPick = { id ->
+                        val c = contacts.find { it.id == id }
+                        if (c != null) onSendMessage("$CONTACT_CARD_PREFIX${c.name}\u2063${c.id}")
+                        showShareContact = false
+                    }
+                )
+            }
+
+            // Group info sheet
+            if (showGroupInfo) {
+                GroupInfoSheet(
+                    groupName = chatName,
+                    members = groupMembers,
+                    isOwner = groupIsOwner,
+                    contacts = contacts,
+                    onRename = { onRenameGroup?.invoke(it) },
+                    onAddMember = { onAddMember?.invoke(it) },
+                    onRemoveMember = { onRemoveMember?.invoke(it) },
+                    onLeave = { onLeaveGroup?.invoke(); showGroupInfo = false; onBack() },
+                    onDismiss = { showGroupInfo = false }
+                )
+            }
+
+            // Contact profile sheet (1:1)
+            if (showContactProfile) {
+                ContactProfileSheet(
+                    name = chatName,
+                    avatar = chatAvatar,
+                    publicKey = contactPublicKey,
+                    isVerified = isVerified,
+                    safetyNumber = safetyNumber,
+                    isBlocked = isBlocked,
+                    isMuted = isMuted,
+                    onVoiceCall = { showContactProfile = false; onStartVoiceCall?.invoke() },
+                    onVideoCall = { showContactProfile = false; onStartVideoCall?.invoke() },
+                    onToggleMute = { onToggleMute?.invoke() },
+                    onToggleBlock = { onToggleBlock?.invoke() },
+                    onVerify = { showContactProfile = false; showVerifySheet = true },
+                    onDismiss = { showContactProfile = false }
+                )
+            }
+
             // ── FLOATING INPUT BAR OVERLAY ──
             Box(
                 modifier = Modifier
@@ -522,6 +633,11 @@ fun ChatWindow(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     Box(
+                        modifier = Modifier.size(38.dp).glassCard(cornerRadius = 19.dp, alpha = 0.08f).border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape).clickable { showEmoji = !showEmoji },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.EmojiEmotions, null, tint = if (showEmoji) AuroraColors.Teal else Color.White.copy(alpha = 0.6f), modifier = Modifier.size(18.dp)) }
+
+                    Box(
                         modifier = Modifier.size(38.dp).glassCard(cornerRadius = 19.dp, alpha = 0.08f).border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape).clickable { filePickerLauncher.launch(arrayOf("*/*")) },
                         contentAlignment = Alignment.Center
                     ) { Icon(Icons.Default.AttachFile, null, tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(17.dp)) }
@@ -530,6 +646,11 @@ fun ChatWindow(
                         modifier = Modifier.size(38.dp).glassCard(cornerRadius = 19.dp, alpha = 0.08f).border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape).clickable { imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         contentAlignment = Alignment.Center
                     ) { Icon(Icons.Default.Image, null, tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(17.dp)) }
+
+                    Box(
+                        modifier = Modifier.size(38.dp).glassCard(cornerRadius = 19.dp, alpha = 0.08f).border(1.dp, Color.White.copy(alpha = 0.1f), CircleShape).clickable { onShareLocation?.invoke() },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.LocationOn, null, tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(17.dp)) }
 
                     Box(
                         modifier = Modifier.weight(1f).heightIn(min = 40.dp)
@@ -593,7 +714,8 @@ fun AuroraMessageBubble(
     index: Int,
     audioPlayer: AudioPlayer,
     onLongPress: ((Message) -> Unit)? = null,
-    onDoubleTap: ((Message) -> Unit)? = null
+    onDoubleTap: ((Message) -> Unit)? = null,
+    onAddSharedContact: ((String, String) -> Unit)? = null
 ) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { kotlinx.coroutines.delay(index * 30L); visible = true }
@@ -706,7 +828,28 @@ fun AuroraMessageBubble(
                             }
                         }
                         if (!message.isDeleted && message.text.isNotBlank() && message.type != "file") {
-                            Text(formatMessageText(message.text), color = Color.White.copy(alpha = 0.92f), fontSize = 14.sp, lineHeight = 20.sp)
+                            if (message.text.startsWith(CONTACT_CARD_PREFIX)) {
+                                val parts = message.text.removePrefix(CONTACT_CARD_PREFIX).split("\u2063")
+                                val cName = parts.getOrNull(0) ?: "Contact"
+                                val cKey = parts.getOrNull(1) ?: ""
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                                    Icon(Icons.Default.Person, null, tint = AuroraColors.Teal, modifier = Modifier.size(34.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(cName, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                        Text("…${cKey.takeLast(10)}", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                                    }
+                                    if (cKey.isNotBlank()) {
+                                        Box(
+                                            modifier = Modifier.background(AuroraColors.Teal.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
+                                                .clickable { onAddSharedContact?.invoke(cName, cKey) }
+                                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                        ) { Text("Add", color = AuroraColors.Teal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+                                    }
+                                }
+                            } else {
+                                Text(formatMessageText(message.text), color = Color.White.copy(alpha = 0.92f), fontSize = 14.sp, lineHeight = 20.sp)
+                            }
                         }
 
                         // Integrated Footer (Time + Tick inside bubble as per HTML prototype)
@@ -1324,3 +1467,292 @@ fun formatMessageText(raw: String): androidx.compose.ui.text.AnnotatedString {
         }
     }
 }
+
+// ============================================================================
+// GROUP INFO
+// ============================================================================
+
+@Composable
+fun ContactProfileSheet(
+    name: String,
+    avatar: String?,
+    publicKey: String,
+    isVerified: Boolean,
+    safetyNumber: String?,
+    isBlocked: Boolean,
+    isMuted: Boolean,
+    onVoiceCall: () -> Unit,
+    onVideoCall: () -> Unit,
+    onToggleMute: () -> Unit,
+    onToggleBlock: () -> Unit,
+    onVerify: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val shortId = if (publicKey.length > 36) publicKey.substring(36).take(8) else publicKey.take(8)
+
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0518).copy(alpha = 0.98f))) {
+        Column(
+            modifier = Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Header
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.ArrowBack, "Close", tint = Color.White, modifier = Modifier.size(24.dp).clickable { onDismiss() })
+                Spacer(Modifier.width(12.dp))
+                Text("Contact info", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(24.dp))
+
+            // Avatar
+            Box(
+                modifier = Modifier.size(110.dp).clip(CircleShape)
+                    .background(Brush.linearGradient(listOf(Color(0xFFFF6E40), Color(0xFFFFAB40)))),
+                contentAlignment = Alignment.Center
+            ) {
+                if (avatar != null) {
+                    AsyncImage(model = avatar, contentDescription = null, modifier = Modifier.size(110.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+                } else {
+                    Text(name.take(1).uppercase(), color = Color.White, fontSize = 46.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                if (isVerified) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(Icons.Default.VerifiedUser, "Verified", tint = AuroraColors.Teal, modifier = Modifier.size(20.dp))
+                }
+            }
+            Text("@$shortId", color = Color.White.copy(alpha = 0.35f), fontSize = 13.sp, letterSpacing = 1.sp, modifier = Modifier.padding(top = 2.dp))
+
+            Spacer(Modifier.height(24.dp))
+
+            // Quick actions
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                ProfileAction(Icons.Default.Call, "Voice", AuroraColors.Teal, onVoiceCall)
+                ProfileAction(Icons.Default.Videocam, "Video", AuroraColors.SoftPink, onVideoCall)
+                ProfileAction(
+                    if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    if (isMuted) "Muted" else "Mute", Color(0xFFFFD700), onToggleMute
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // Public key card (tap to copy)
+            ProfileCard {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("PUBLIC KEY", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp, letterSpacing = 1.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            publicKey, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Icon(
+                        Icons.Default.ContentCopy, "Copy", tint = AuroraColors.Teal,
+                        modifier = Modifier.size(22.dp).clickable {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(publicKey))
+                            android.widget.Toast.makeText(ctx, "Public key copied", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Verification
+            ProfileCard(onClick = onVerify) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Icon(
+                        if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Lock,
+                        null, tint = if (isVerified) AuroraColors.Teal else Color.White.copy(alpha = 0.6f),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(if (isVerified) "Verified" else "Verify contact", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        if (!safetyNumber.isNullOrBlank()) {
+                            Text("Safety number: $safetyNumber", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        } else {
+                            Text("Compare safety numbers to confirm identity", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp)
+                        }
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = Color.White.copy(alpha = 0.3f), modifier = Modifier.size(18.dp))
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Encryption note
+            ProfileCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Lock, null, tint = AuroraColors.Teal.copy(alpha = 0.8f), modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(14.dp))
+                    Text("Messages & calls are end-to-end encrypted", color = Color.White.copy(alpha = 0.55f), fontSize = 13.sp)
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Block toggle
+            ProfileCard(onClick = onToggleBlock) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Block, null, tint = Color(0xFFFF5252), modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(14.dp))
+                    Text(if (isBlocked) "Unblock $name" else "Block $name", color = Color(0xFFFF5252), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            Spacer(Modifier.height(40.dp))
+        }
+    }
+}
+
+@Composable
+private fun ProfileAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { onClick() }.padding(8.dp)) {
+        Box(
+            modifier = Modifier.size(54.dp).clip(CircleShape).background(tint.copy(alpha = 0.12f)).border(1.dp, tint.copy(alpha = 0.3f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) { Icon(icon, label, tint = tint, modifier = Modifier.size(24.dp)) }
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun ProfileCard(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassCard(cornerRadius = 16.dp, alpha = 0.04f)
+            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(16.dp)
+    ) { content() }
+}
+
+@Composable
+fun GroupInfoSheet(
+    groupName: String,
+    members: List<com.firefly.befirefly.ui.screens.GroupMemberUi>,
+    isOwner: Boolean,
+    contacts: List<com.firefly.befirefly.domain.model.ChatPreview>,
+    onRename: (String) -> Unit,
+    onAddMember: (String) -> Unit,
+    onRemoveMember: (String) -> Unit,
+    onLeave: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var showRename by remember { mutableStateOf(false) }
+    var showAdd by remember { mutableStateOf(false) }
+    val memberIds = members.map { it.id }.toSet()
+    val addable = contacts.filter { it.id !in memberIds && !it.isGroup }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0518).copy(alpha = 0.98f))) {
+        Column(
+            modifier = Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.ArrowBack, "Close", tint = Color.White, modifier = Modifier.size(24.dp).clickable { onDismiss() })
+                Spacer(Modifier.width(12.dp))
+                Text("Group info", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(20.dp))
+
+            // Group avatar + name
+            Box(
+                modifier = Modifier.size(80.dp).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFFB388FF))), CircleShape),
+                contentAlignment = Alignment.Center
+            ) { Text(groupName.take(1).uppercase(), color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold) }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(groupName, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                if (isOwner) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(Icons.Default.Edit, "Rename", tint = AuroraColors.Teal, modifier = Modifier.size(18.dp).clickable { showRename = true })
+                }
+            }
+            Text("${members.size} member${if (members.size == 1) "" else "s"}", color = Color.White.copy(alpha = 0.4f), fontSize = 13.sp)
+            Spacer(Modifier.height(20.dp))
+
+            if (isOwner) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { showAdd = true }.padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.PersonAdd, null, tint = AuroraColors.Teal, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(14.dp))
+                    Text("Add member", color = AuroraColors.Teal, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            members.forEach { m ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier.size(40.dp).background(Brush.linearGradient(listOf(Color(0xFFFF6E40), Color(0xFFFFAB40))), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) { Text(m.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold) }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(m.name, color = Color.White, fontSize = 15.sp)
+                        if (m.isAdmin) Text("Admin", color = AuroraColors.Teal.copy(alpha = 0.7f), fontSize = 11.sp)
+                    }
+                    if (isOwner && m.name != "You" && !m.isAdmin) {
+                        Icon(Icons.Default.RemoveCircleOutline, "Remove", tint = Color(0xFFFF5252).copy(alpha = 0.7f),
+                            modifier = Modifier.size(22.dp).clickable { onRemoveMember(m.id) })
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { onLeave() }.padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Logout, null, tint = Color(0xFFFF5252), modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(14.dp))
+                Text("Leave group", color = Color(0xFFFF5252), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(40.dp))
+        }
+    }
+
+    if (showRename) {
+        EditMessageDialog(initialText = groupName, onDismiss = { showRename = false }, onConfirm = { onRename(it); showRename = false })
+    }
+    if (showAdd) {
+        ForwardPickerDialog(contacts = addable, onDismiss = { showAdd = false }, onPick = { onAddMember(it); showAdd = false })
+    }
+}
+
+// ============================================================================
+// EMOJI SET (curated common emojis for the picker)
+// ============================================================================
+
+// Marker prefix identifying a shared-contact card message.
+const val CONTACT_CARD_PREFIX = "\u2063BFCARD:"
+
+val beFireflyEmojis: List<String> = listOf(
+    "\uD83D\uDE00","\uD83D\uDE03","\uD83D\uDE04","\uD83D\uDE01","\uD83D\uDE06","\uD83D\uDE05","\uD83D\uDE02","\uD83E\uDD23",
+    "\uD83D\uDE0A","\uD83D\uDE07","\uD83D\uDE42","\uD83D\uDE43","\uD83D\uDE09","\uD83D\uDE0C","\uD83D\uDE0D","\uD83E\uDD70",
+    "\uD83D\uDE18","\uD83D\uDE17","\uD83D\uDE1A","\uD83D\uDE0B","\uD83D\uDE1B","\uD83D\uDE1C","\uD83E\uDD2A","\uD83D\uDE1D",
+    "\uD83E\uDD11","\uD83E\uDD17","\uD83E\uDD2D","\uD83E\uDD2B","\uD83E\uDD14","\uD83E\uDD10","\uD83E\uDD28","\uD83D\uDE10",
+    "\uD83D\uDE11","\uD83D\uDE36","\uD83D\uDE0F","\uD83D\uDE12","\uD83D\uDE44","\uD83D\uDE2A","\uD83D\uDE2B","\uD83D\uDE34",
+    "\uD83D\uDE0E","\uD83E\uDD13","\uD83D\uDE15","\uD83D\uDE1F","\uD83D\uDE41","\u2639\uFE0F","\uD83D\uDE2E","\uD83D\uDE2F",
+    "\uD83D\uDE32","\uD83D\uDE33","\uD83D\uDE26","\uD83D\uDE27","\uD83D\uDE28","\uD83D\uDE30","\uD83D\uDE25","\uD83D\uDE22",
+    "\uD83D\uDE2D","\uD83D\uDE31","\uD83D\uDE21","\uD83D\uDE20","\uD83E\uDD2C","\uD83D\uDE08","\uD83D\uDC7F","\uD83D\uDC80",
+    "\u2764\uFE0F","\uD83E\uDDE1","\uD83D\uDC9B","\uD83D\uDC9A","\uD83D\uDC99","\uD83D\uDC9C","\uD83D\uDDA4","\uD83E\uDD0D",
+    "\uD83D\uDC4D","\uD83D\uDC4E","\uD83D\uDC4F","\uD83D\uDE4C","\uD83D\uDE4F","\uD83D\uDCAA","\uD83E\uDD1D","\u270C\uFE0F",
+    "\uD83D\uDD25","\u2B50","\u2728","\uD83C\uDF89","\uD83C\uDF8A","\uD83D\uDC4C","\uD83E\uDD18","\uD83D\uDC40",
+    "\uD83C\uDF1F","\u26A1","\uD83D\uDCAF","\uD83C\uDF08","\uD83C\uDF80","\uD83C\uDF81","\uD83D\uDE80","\uD83D\uDC1B"
+)

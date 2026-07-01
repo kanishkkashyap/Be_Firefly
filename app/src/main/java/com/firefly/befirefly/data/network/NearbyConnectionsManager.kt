@@ -360,7 +360,7 @@ class NearbyConnectionsManager(private val context: Context) {
                              val theirKey = packet.payload
                              if (theirKey != null) handleHandshake(endpointId, theirKey, true)
                         }
-                        PacketType.TEXT, PacketType.IMAGE, PacketType.AUDIO, PacketType.FILE, PacketType.GROUP_MESSAGE, PacketType.GROUP_INVITE, PacketType.REACTION, PacketType.EDIT, PacketType.DELETE, PacketType.DISAPPEARING -> {
+                        PacketType.TEXT, PacketType.IMAGE, PacketType.AUDIO, PacketType.FILE, PacketType.GROUP_MESSAGE, PacketType.GROUP_INVITE, PacketType.REACTION, PacketType.EDIT, PacketType.DELETE, PacketType.DISAPPEARING, PacketType.STATUS, PacketType.STATUS_MEDIA, PacketType.CALL_OFFER, PacketType.CALL_ANSWER, PacketType.CALL_ICE, PacketType.CALL_END, PacketType.CALL_BUSY -> {
                             // End-to-end encrypted: the payload is sealed for the FINAL recipient.
                             // A relay must NEVER decrypt — it can only route the opaque blob.
                             // Media arrives as a series of encrypted chunks of this same type.

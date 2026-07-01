@@ -43,7 +43,8 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = com.firefly.befirefly.data.repository.ChatRepository(
         database.messageDao(),
         database.contactDao(),
-        database.groupDao()
+        database.groupDao(),
+        database.statusDao()
     )
 
     // In-memory state
@@ -73,6 +74,7 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
             try { com.firefly.befirefly.utils.FileReassembler.cleanupStale(getApplication()) } catch (_: Exception) {}
             while (true) {
                 try { repository.deleteExpiredMessages() } catch (_: Exception) {}
+                try { repository.deleteExpiredStatuses() } catch (_: Exception) {}
                 kotlinx.coroutines.delay(15000)
             }
         }
@@ -121,8 +123,9 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
         if (isAppForeground && currentConversationId == senderId) return
         if (isMuted(senderId)) return
         val name = repository.getContact(senderId)?.name ?: "New message"
+        val shown = if (notifPrefs.getBoolean("hide_previews", false)) "New message" else preview
         kotlinx.coroutines.withContext(Dispatchers.Main) {
-            notificationHelper.showMessageNotification(name, preview, senderId)
+            notificationHelper.showMessageNotification(name, shown, senderId)
         }
     }
 
@@ -333,6 +336,21 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
         if (conversationId == currentConversationId) currentChatMuted = newVal
     }
 
+    // --- Block & notification privacy ---
+    private val notifPrefs by lazy {
+        getApplication<android.app.Application>().getSharedPreferences("notif_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    var currentContactBlocked by mutableStateOf(false)
+        private set
+
+    fun toggleBlock(contactId: String) {
+        viewModelScope.launch {
+            val current = repository.getContact(contactId)?.isBlocked ?: false
+            repository.setBlocked(contactId, !current)
+            if (contactId == currentConversationId) currentContactBlocked = !current
+        }
+    }
+
     // --- Drafts ---
     private val draftPrefs by lazy {
         getApplication<android.app.Application>().getSharedPreferences("drafts", android.content.Context.MODE_PRIVATE)
@@ -354,11 +372,426 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setStarred(message.id, !message.isStarred) }
     }
 
+    // --- Groups ---
+    var isCurrentChatGroup by mutableStateOf(false)
+        private set
+    var currentGroupName by mutableStateOf("")
+        private set
+    var currentGroupIsOwner by mutableStateOf(false)
+        private set
+    var currentGroupMembers by mutableStateOf<List<com.firefly.befirefly.ui.screens.GroupMemberUi>>(emptyList())
+        private set
+
+    private suspend fun loadGroupInfo(groupId: String) {
+        val group = repository.getGroup(groupId)
+        if (group == null) {
+            isCurrentChatGroup = false
+            currentGroupMembers = emptyList()
+            return
+        }
+        isCurrentChatGroup = true
+        currentGroupName = group.name
+        currentGroupIsOwner = group.ownerId == wallet?.publicKey
+        val myId = wallet?.publicKey
+        currentGroupMembers = repository.getGroupMembers(groupId).map { m ->
+            val name = if (m.userId == myId) "You" else repository.getContact(m.userId)?.name ?: "User-${m.userId.takeLast(6)}"
+            com.firefly.befirefly.ui.screens.GroupMemberUi(m.userId, name, m.isAdmin)
+        }
+    }
+
+    private suspend fun propagateGroupInvite(groupId: String) {
+        val group = repository.getGroup(groupId) ?: return
+        val myId = wallet?.publicKey ?: return
+        val members = repository.getGroupMembers(groupId)
+        val invite = com.firefly.befirefly.data.network.GroupInvitePayload(groupId, group.name, members.map { it.userId })
+        val json = gson.toJson(invite)
+        members.forEach { m ->
+            if (m.userId != myId) sendControlPacket(m.userId, com.firefly.befirefly.data.network.PacketType.GROUP_INVITE, json)
+        }
+    }
+
+    fun renameGroup(groupId: String, newName: String) {
+        if (newName.isBlank()) return
+        viewModelScope.launch {
+            repository.renameGroup(groupId, newName)
+            if (groupId == currentConversationId) currentGroupName = newName
+            propagateGroupInvite(groupId)
+        }
+    }
+
+    fun addGroupMember(groupId: String, userId: String) {
+        viewModelScope.launch {
+            repository.addGroupMember(groupId, userId)
+            if (groupId == currentConversationId) loadGroupInfo(groupId)
+            propagateGroupInvite(groupId)
+        }
+    }
+
+    fun removeGroupMember(groupId: String, userId: String) {
+        viewModelScope.launch {
+            repository.removeGroupMember(groupId, userId)
+            if (groupId == currentConversationId) loadGroupInfo(groupId)
+            propagateGroupInvite(groupId)
+        }
+    }
+
+    fun leaveGroup(groupId: String) {
+        viewModelScope.launch {
+            repository.leaveGroup(groupId)
+            if (groupId == currentConversationId) {
+                isCurrentChatGroup = false
+                currentGroupMembers = emptyList()
+            }
+        }
+    }
+
     fun togglePinMessage(message: com.firefly.befirefly.ui.screens.Message) {
         val convId = currentConversationId ?: return
         viewModelScope.launch {
             if (message.isPinned) repository.unpinMessage(convId)
             else repository.pinMessage(convId, message.id)
+        }
+    }
+
+    // --- Status / Stories ---
+    val statuses: kotlinx.coroutines.flow.Flow<List<com.firefly.befirefly.ui.screens.StatusUi>> =
+        repository.getStatuses().map { list ->
+            list.map { com.firefly.befirefly.ui.screens.StatusUi(it.authorName, it.text, it.timestamp, it.isMine, it.mediaPath, it.mediaType) }
+        }
+
+    /** Post a status and broadcast it (encrypted) to all contacts. Expires in 24h. */
+    fun postStatus(text: String) {
+        if (text.isBlank()) return
+        val myId = wallet?.publicKey ?: return
+        val now = System.currentTimeMillis()
+        viewModelScope.launch {
+            repository.insertStatus(
+                com.firefly.befirefly.data.local.entity.StatusEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    authorId = myId,
+                    authorName = username.ifBlank { "Me" },
+                    text = text,
+                    timestamp = now,
+                    expiresAt = now + 24L * 3600_000L,
+                    isMine = true
+                )
+            )
+            val json = gson.toJson(mapOf("text" to text, "name" to username))
+            repository.getAllContacts().firstOrNull()?.forEach { c ->
+                sendControlPacket(c.id, com.firefly.befirefly.data.network.PacketType.STATUS, json)
+            }
+        }
+    }
+
+    /**
+     * Post a photo/video story. The media is copied locally for our own viewing and broadcast to
+     * every contact via the existing encrypted, chunked media pipeline (STATUS_MEDIA packets).
+     * Note: this sends the media once per contact — fine for photos (compressed), heavier for video.
+     */
+    fun postStatusMedia(uri: android.net.Uri, isVideo: Boolean) {
+        val myId = wallet?.publicKey ?: return
+        val app = getApplication<android.app.Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val mediaType = if (isVideo) "video" else "image"
+                val ext = if (isVideo) "mp4" else "jpg"
+                val dir = java.io.File(app.filesDir, "status_media").apply { mkdirs() }
+                val localFile = java.io.File(dir, "status_${System.currentTimeMillis()}.$ext")
+                app.contentResolver.openInputStream(uri)?.use { inp ->
+                    java.io.FileOutputStream(localFile).use { out -> inp.copyTo(out) }
+                }
+
+                val now = System.currentTimeMillis()
+                repository.insertStatus(
+                    com.firefly.befirefly.data.local.entity.StatusEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        authorId = myId,
+                        authorName = username.ifBlank { "Me" },
+                        text = "",
+                        timestamp = now,
+                        expiresAt = now + 24L * 3600_000L,
+                        isMine = true,
+                        mediaPath = localFile.absolutePath,
+                        mediaType = mediaType
+                    )
+                )
+
+                val manager = nearbyManager ?: return@launch
+                val contacts = repository.getAllContacts().firstOrNull() ?: emptyList()
+                for (c in contacts) {
+                    val packetId = java.util.UUID.randomUUID().toString()
+                    if (!isVideo) {
+                        val compressed = com.firefly.befirefly.utils.MediaUtils.compressImage(app, uri)
+                        if (compressed != null) {
+                            val tmp = java.io.File(app.cacheDir, "status_${packetId}.jpg")
+                            tmp.writeBytes(compressed)
+                            manager.sendFilePayload(c.id, android.net.Uri.fromFile(tmp), "status.jpg", "image/jpeg", tmp.length(), packetId, packetType = PacketType.STATUS_MEDIA)
+                        } else {
+                            manager.sendFilePayload(c.id, android.net.Uri.fromFile(localFile), "status.jpg", "image/jpeg", localFile.length(), packetId, packetType = PacketType.STATUS_MEDIA)
+                        }
+                    } else {
+                        manager.sendFilePayload(c.id, android.net.Uri.fromFile(localFile), "status.mp4", "video/mp4", localFile.length(), packetId, packetType = PacketType.STATUS_MEDIA)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("UserViewModel", "Failed to post media status", e)
+            }
+        }
+    }
+
+    // ======================= VOICE / VIDEO CALLS (WebRTC, internet only) =======================
+    // Signaling rides the existing E2E-encrypted control-packet path over the cloud (MQTT).
+    // Media flows peer-to-peer via ICE. See WebRtcManager for NAT/TURN notes.
+
+    var callState by mutableStateOf(com.firefly.befirefly.data.call.CallUiState())
+        private set
+
+    // Exposed so the call UI can build renderers (eglBase) and attach the local preview track.
+    var webRtcManager: com.firefly.befirefly.data.call.WebRtcManager? by mutableStateOf(null)
+        private set
+
+    var remoteVideoTrack: org.webrtc.VideoTrack? by mutableStateOf(null)
+        private set
+
+    private val audioManager by lazy {
+        getApplication<android.app.Application>().getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+    }
+    private var savedAudioMode = android.media.AudioManager.MODE_NORMAL
+    private var pendingIncomingOfferSdp: String? = null
+    private var callTimerJob: kotlinx.coroutines.Job? = null
+    private val callRinger by lazy { com.firefly.befirefly.utils.CallRinger(getApplication()) }
+
+    private fun mainLaunch(block: suspend () -> Unit) {
+        viewModelScope.launch(Dispatchers.Main) { block() }
+    }
+
+    private fun newWebRtcManager(peerId: String): com.firefly.befirefly.data.call.WebRtcManager {
+        val mgr = com.firefly.befirefly.data.call.WebRtcManager(getApplication())
+        mgr.setListener(object : com.firefly.befirefly.data.call.WebRtcManager.Listener {
+            override fun onLocalDescription(sdp: org.webrtc.SessionDescription) {
+                val type = if (sdp.type == org.webrtc.SessionDescription.Type.OFFER)
+                    PacketType.CALL_OFFER else PacketType.CALL_ANSWER
+                val json = gson.toJson(mapOf(
+                    "sdp" to sdp.description,
+                    "video" to callState.isVideo,
+                    "name" to username
+                ))
+                sendControlPacket(peerId, type, json)
+            }
+            override fun onLocalIceCandidate(candidate: org.webrtc.IceCandidate) {
+                val json = gson.toJson(mapOf(
+                    "sdpMid" to candidate.sdpMid,
+                    "sdpMLineIndex" to candidate.sdpMLineIndex,
+                    "candidate" to candidate.sdp
+                ))
+                sendControlPacket(peerId, PacketType.CALL_ICE, json)
+            }
+            override fun onConnectionStateChanged(state: org.webrtc.PeerConnection.PeerConnectionState) {
+                mainLaunch {
+                    when (state) {
+                        org.webrtc.PeerConnection.PeerConnectionState.CONNECTED -> {
+                            if (callState.phase != com.firefly.befirefly.data.call.CallPhase.CONNECTED) {
+                                callState = callState.copy(
+                                    phase = com.firefly.befirefly.data.call.CallPhase.CONNECTED,
+                                    startedAtMs = System.currentTimeMillis()
+                                )
+                            }
+                        }
+                        org.webrtc.PeerConnection.PeerConnectionState.DISCONNECTED,
+                        org.webrtc.PeerConnection.PeerConnectionState.FAILED,
+                        org.webrtc.PeerConnection.PeerConnectionState.CLOSED -> {
+                            if (callState.phase != com.firefly.befirefly.data.call.CallPhase.IDLE) endCall(notifyPeer = false)
+                        }
+                        else -> {}
+                    }
+                }
+            }
+            override fun onRemoteVideoTrack(track: org.webrtc.VideoTrack) {
+                mainLaunch { remoteVideoTrack = track }
+            }
+        })
+        return mgr
+    }
+
+    private fun configureAudioForCall(video: Boolean) {
+        try {
+            savedAudioMode = audioManager.mode
+            audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+            val speaker = video // video calls default to speaker, voice calls to earpiece
+            audioManager.isSpeakerphoneOn = speaker
+            callState = callState.copy(isSpeakerOn = speaker)
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreAudio() {
+        try {
+            audioManager.isSpeakerphoneOn = false
+            audioManager.mode = savedAudioMode
+        } catch (_: Exception) {}
+    }
+
+    /** Start an outgoing call. Requires internet (cloud relay) to reach the peer. */
+    fun startCall(peerId: String, video: Boolean) {
+        if (callState.phase != com.firefly.befirefly.data.call.CallPhase.IDLE) return
+        viewModelScope.launch {
+            val name = repository.getContact(peerId)?.name ?: "User-${peerId.takeLast(6)}"
+            mainLaunch {
+                callState = com.firefly.befirefly.data.call.CallUiState(
+                    phase = com.firefly.befirefly.data.call.CallPhase.OUTGOING,
+                    peerId = peerId, peerName = name, isVideo = video, isVideoEnabled = video
+                )
+                remoteVideoTrack = null
+                configureAudioForCall(video)
+                val mgr = newWebRtcManager(peerId)
+                webRtcManager = mgr
+                mgr.startCall(video)
+            }
+        }
+    }
+
+    /** Accept the incoming call we're currently ringing on. */
+    fun acceptCall() {
+        val offer = pendingIncomingOfferSdp ?: return
+        val peerId = callState.peerId
+        callRinger.stop()
+        mainLaunch {
+            callState = callState.copy(phase = com.firefly.befirefly.data.call.CallPhase.CONNECTING)
+            configureAudioForCall(callState.isVideo)
+            val mgr = newWebRtcManager(peerId)
+            webRtcManager = mgr
+            mgr.onRemoteOffer(
+                org.webrtc.SessionDescription(org.webrtc.SessionDescription.Type.OFFER, offer),
+                callState.isVideo
+            )
+            pendingIncomingOfferSdp = null
+        }
+    }
+
+    /** Decline an incoming call, or cancel/hang up an active one. */
+    fun declineCall() = endCall(notifyPeer = true)
+
+    fun endCall(notifyPeer: Boolean = true) {
+        val peerId = callState.peerId
+        callRinger.stop()
+        if (notifyPeer && peerId.isNotBlank() && callState.phase != com.firefly.befirefly.data.call.CallPhase.IDLE) {
+            sendControlPacket(peerId, PacketType.CALL_END, "{}")
+        }
+        callTimerJob?.cancel(); callTimerJob = null
+        webRtcManager?.endCall()
+        webRtcManager = null
+        remoteVideoTrack = null
+        pendingIncomingOfferSdp = null
+        restoreAudio()
+        callState = com.firefly.befirefly.data.call.CallUiState() // back to IDLE
+    }
+
+    fun toggleMute() {
+        val muted = !callState.isMuted
+        webRtcManager?.setMicEnabled(!muted)
+        callState = callState.copy(isMuted = muted)
+    }
+
+    fun toggleCallVideo() {
+        val enabled = !callState.isVideoEnabled
+        webRtcManager?.setVideoEnabled(enabled)
+        callState = callState.copy(isVideoEnabled = enabled)
+    }
+
+    fun switchCamera() { webRtcManager?.switchCamera() }
+
+    // --- Encrypted backup / restore (downloadable ZIP, password-protected) ---
+    fun exportBackup(
+        out: java.io.OutputStream,
+        password: String,
+        onResult: (com.firefly.befirefly.utils.BackupManager.BackupResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                val r = com.firefly.befirefly.utils.BackupManager.export(database, username, password, out)
+                try { out.close() } catch (_: Exception) {}
+                r
+            }
+            onResult(result)
+        }
+    }
+
+    fun importBackup(
+        input: java.io.InputStream,
+        password: String,
+        onResult: (com.firefly.befirefly.utils.BackupManager.BackupResult) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                val r = com.firefly.befirefly.utils.BackupManager.import(database, password, input)
+                try { input.close() } catch (_: Exception) {}
+                r
+            }
+            onResult(result)
+        }
+    }
+
+
+    fun toggleSpeaker() {
+        val on = !callState.isSpeakerOn
+        try { audioManager.isSpeakerphoneOn = on } catch (_: Exception) {}
+        callState = callState.copy(isSpeakerOn = on)
+    }
+
+    private fun handleCallPacket(packet: NetworkPacket, payload: String?) {
+        when (packet.type) {
+            PacketType.CALL_OFFER -> {
+                // Reject if already busy.
+                if (callState.phase != com.firefly.befirefly.data.call.CallPhase.IDLE) {
+                    sendControlPacket(packet.senderId, PacketType.CALL_BUSY, "{}")
+                    return
+                }
+                if (payload == null) return
+                try {
+                    val obj = JsonParser.parseString(payload).asJsonObject
+                    val sdp = obj.get("sdp").asString
+                    val video = obj.has("video") && obj.get("video").asBoolean
+                    val name = if (obj.has("name")) obj.get("name").asString else "User-${packet.senderId.takeLast(6)}"
+                    pendingIncomingOfferSdp = sdp
+                    mainLaunch {
+                        callState = com.firefly.befirefly.data.call.CallUiState(
+                            phase = com.firefly.befirefly.data.call.CallPhase.INCOMING,
+                            peerId = packet.senderId, peerName = name,
+                            isVideo = video, isVideoEnabled = video
+                        )
+                        remoteVideoTrack = null
+                        callRinger.start()
+                    }
+                } catch (e: Exception) { android.util.Log.e("UserViewModel", "Bad CALL_OFFER", e) }
+            }
+            PacketType.CALL_ANSWER -> {
+                if (payload == null) return
+                try {
+                    val obj = JsonParser.parseString(payload).asJsonObject
+                    val sdp = obj.get("sdp").asString
+                    mainLaunch {
+                        callState = callState.copy(phase = com.firefly.befirefly.data.call.CallPhase.CONNECTING)
+                        webRtcManager?.onRemoteAnswer(
+                            org.webrtc.SessionDescription(org.webrtc.SessionDescription.Type.ANSWER, sdp)
+                        )
+                    }
+                } catch (e: Exception) { android.util.Log.e("UserViewModel", "Bad CALL_ANSWER", e) }
+            }
+            PacketType.CALL_ICE -> {
+                if (payload == null) return
+                try {
+                    val obj = JsonParser.parseString(payload).asJsonObject
+                    val candidate = org.webrtc.IceCandidate(
+                        obj.get("sdpMid").asString,
+                        obj.get("sdpMLineIndex").asInt,
+                        obj.get("candidate").asString
+                    )
+                    webRtcManager?.onRemoteIceCandidate(candidate)
+                } catch (e: Exception) { android.util.Log.e("UserViewModel", "Bad CALL_ICE", e) }
+            }
+            PacketType.CALL_END, PacketType.CALL_BUSY -> {
+                mainLaunch { if (callState.phase != com.firefly.befirefly.data.call.CallPhase.IDLE) endCall(notifyPeer = false) }
+            }
+            else -> {}
         }
     }
 
@@ -412,6 +845,8 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
         messageJob?.cancel()
         messageJob = viewModelScope.launch {
             currentContactVerified = repository.getContact(contactId)?.isVerified ?: false
+            currentContactBlocked = repository.getContact(contactId)?.isBlocked ?: false
+            loadGroupInfo(contactId)
             repository.deleteExpiredMessages()
             sendReadReceipts(contactId)
 
@@ -684,6 +1119,8 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
         if (packet.receiverId == wallet?.publicKey) {
             android.util.Log.d("UserViewModel", "Packet IS for me. Processing ${packet.type}...")
             viewModelScope.launch {
+                // Drop everything from blocked contacts.
+                if (repository.getContact(packet.senderId)?.isBlocked == true) return@launch
                 // E2E: if the packet carries a sealed payload, open it with the shared secret
                 // derived from the SENDER's public key. Control packets (ACKs) stay plaintext.
                 val payload = if (packet.encryptedPayload != null) {
@@ -968,6 +1405,57 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
                         // Ephemeral, plaintext "1" — show the typing indicator for this sender.
                         onRemoteTyping(packet.senderId)
                     }
+                    com.firefly.befirefly.data.network.PacketType.STATUS -> {
+                        if (payload != null) {
+                            try {
+                                val obj = com.google.gson.JsonParser.parseString(payload).asJsonObject
+                                val text = obj.get("text").asString
+                                val name = if (obj.has("name")) obj.get("name").asString else (repository.getContact(packet.senderId)?.name ?: "User-${packet.senderId.takeLast(6)}")
+                                val now = System.currentTimeMillis()
+                                repository.insertStatus(
+                                    com.firefly.befirefly.data.local.entity.StatusEntity(
+                                        id = packet.id,
+                                        authorId = packet.senderId,
+                                        authorName = name,
+                                        text = text,
+                                        timestamp = now,
+                                        expiresAt = now + 24L * 3600_000L,
+                                        isMine = false
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                android.util.Log.e("UserViewModel", "Failed to parse STATUS", e)
+                            }
+                        }
+                    }
+                    com.firefly.befirefly.data.network.PacketType.STATUS_MEDIA -> {
+                        if (payload != null) {
+                            val isChunked = payload.contains("|") && payload.contains(":")
+                            if (isChunked) {
+                                val baseId = packet.id.substringBeforeLast("-")
+                                val app = getApplication<android.app.Application>()
+                                val assembled = com.firefly.befirefly.utils.FileReassembler.addChunk(app, baseId, payload)
+                                if (assembled != null) {
+                                    val name = repository.getContact(packet.senderId)?.name ?: "User-${packet.senderId.takeLast(6)}"
+                                    val mediaType = if (assembled.mimeType.startsWith("video")) "video" else "image"
+                                    val now = System.currentTimeMillis()
+                                    repository.insertStatus(
+                                        com.firefly.befirefly.data.local.entity.StatusEntity(
+                                            id = baseId,
+                                            authorId = packet.senderId,
+                                            authorName = name,
+                                            text = "",
+                                            timestamp = now,
+                                            expiresAt = now + 24L * 3600_000L,
+                                            isMine = false,
+                                            mediaPath = assembled.path,
+                                            mediaType = mediaType
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
                     com.firefly.befirefly.data.network.PacketType.DISAPPEARING -> {
                         if (payload != null) {
                             try {
@@ -985,7 +1473,8 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
                     com.firefly.befirefly.data.network.PacketType.GROUP_INVITE -> {
                         if (payload != null) {
                             val invite = com.google.gson.Gson().fromJson(payload, com.firefly.befirefly.data.network.GroupInvitePayload::class.java)
-                            repository.createGroup(invite.groupId, invite.groupName, packet.senderId, invite.memberIds)
+                            repository.syncGroup(invite.groupId, invite.groupName, packet.senderId, invite.memberIds)
+                            if (invite.groupId == currentConversationId) loadGroupInfo(invite.groupId)
                         }
                     }
                     com.firefly.befirefly.data.network.PacketType.GROUP_MESSAGE -> {
@@ -1000,6 +1489,13 @@ class UserViewModel(application: Application) : AndroidViewModel(application) {
                                 android.util.Log.e("UserViewModel", "Failed to parse group message", e)
                             }
                         }
+                    }
+                    com.firefly.befirefly.data.network.PacketType.CALL_OFFER,
+                    com.firefly.befirefly.data.network.PacketType.CALL_ANSWER,
+                    com.firefly.befirefly.data.network.PacketType.CALL_ICE,
+                    com.firefly.befirefly.data.network.PacketType.CALL_END,
+                    com.firefly.befirefly.data.network.PacketType.CALL_BUSY -> {
+                        handleCallPacket(packet, payload)
                     }
                     else -> {}
                 }

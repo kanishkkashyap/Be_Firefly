@@ -11,5 +11,6 @@ data class ContactEntity(
     val lastSeen: Long,
     val isOnline: Boolean = false,
     val isPinned: Boolean = false,
-    val isVerified: Boolean = false // Safety number / QR verified (no MITM)
+    val isVerified: Boolean = false, // Safety number / QR verified (no MITM)
+    val isBlocked: Boolean = false // Blocked — their messages are dropped
 )

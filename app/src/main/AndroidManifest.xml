@@ -28,6 +28,11 @@
     <!-- Core Feature Permissions -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Proximity wake lock — blanks the screen during voice calls -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Vibrate on incoming calls -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     

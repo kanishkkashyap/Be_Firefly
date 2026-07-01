@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import com.firefly.befirefly.ui.components.AuroraColors
 import com.firefly.befirefly.ui.components.glassCard
 import com.firefly.befirefly.ui.components.*
+import dev.chrisbanes.haze.hazeChild
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
@@ -30,7 +31,8 @@ private fun tabColor(tab: MainTab): Color = when (tab) {
 fun FloatingBottomBar(
     currentTab: MainTab,
     onTabSelected: (MainTab) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hazeState: dev.chrisbanes.haze.HazeState? = null
 ) {
     val tabs = MainTab.values()
 
@@ -62,18 +64,26 @@ fun FloatingBottomBar(
                     spotColor = Color.Black.copy(alpha = 0.3f)
                 )
                 .clip(RoundedCornerShape(34.dp))
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.07f),
-                            Color.White.copy(alpha = 0.02f)
+                // Real backdrop blur: sample + blur whatever is scrolling behind the bar.
+                // Falls back to a subtle translucent glass if no haze source is provided.
+                .then(
+                    if (hazeState != null) {
+                        Modifier.hazeChild(state = hazeState, shape = RoundedCornerShape(34.dp))
+                    } else {
+                        Modifier.background(
+                            brush = Brush.linearGradient(
+                                colors = listOf(
+                                    Color.White.copy(alpha = 0.07f),
+                                    Color.White.copy(alpha = 0.02f)
+                                )
+                            ),
+                            shape = RoundedCornerShape(34.dp)
                         )
-                    ),
-                    shape = RoundedCornerShape(34.dp)
+                    }
                 )
                 .border(
                     width = 1.dp,
-                    color = Color.White.copy(alpha = 0.07f),
+                    color = Color.White.copy(alpha = 0.12f),
                     shape = RoundedCornerShape(34.dp)
                 )
         ) {

@@ -267,6 +267,7 @@ fun AppContent(userViewModel: UserViewModel) {
             val peerCount by userViewModel.connectedPeersCount.collectAsState(initial = 0)
             val isCloudConnected by userViewModel.isCloudConnected.collectAsState(initial = false)
             val lastError by userViewModel.lastNetworkError.collectAsState(initial = null)
+            val statuses by userViewModel.statuses.collectAsState(initial = emptyList())
 
             com.firefly.befirefly.ui.screens.MainScreen(
                 wallet = userViewModel.wallet!!,
@@ -326,8 +327,80 @@ fun AppContent(userViewModel: UserViewModel) {
                 initialDraft = userViewModel.currentDraft,
                 onDraftChanged = { text -> userViewModel.saveDraft(text) },
                 onStarMessage = { msg -> userViewModel.toggleStar(msg) },
-                onPinMessage = { msg -> userViewModel.togglePinMessage(msg) }
+                onPinMessage = { msg -> userViewModel.togglePinMessage(msg) },
+                isGroup = userViewModel.isCurrentChatGroup,
+                groupMembers = userViewModel.currentGroupMembers,
+                groupIsOwner = userViewModel.currentGroupIsOwner,
+                onRenameGroup = { gid, name -> userViewModel.renameGroup(gid, name) },
+                onAddGroupMember = { gid, uid -> userViewModel.addGroupMember(gid, uid) },
+                onRemoveGroupMember = { gid, uid -> userViewModel.removeGroupMember(gid, uid) },
+                onLeaveGroup = { gid -> userViewModel.leaveGroup(gid) },
+                isContactBlocked = userViewModel.currentContactBlocked,
+                onToggleBlock = { id -> userViewModel.toggleBlock(id) },
+                onShareLocation = {
+                    when {
+                        !com.firefly.befirefly.utils.LocationHelper.hasPermission(context) ->
+                            android.widget.Toast.makeText(context, "Location permission needed", android.widget.Toast.LENGTH_SHORT).show()
+                        !com.firefly.befirefly.utils.LocationHelper.isLocationEnabled(context) ->
+                            android.widget.Toast.makeText(context, "Turn on location to share", android.widget.Toast.LENGTH_SHORT).show()
+                        else -> {
+                            android.widget.Toast.makeText(context, "Getting your location…", android.widget.Toast.LENGTH_SHORT).show()
+                            com.firefly.befirefly.utils.LocationHelper.getCurrentLocation(context) { loc ->
+                                if (loc != null) {
+                                    userViewModel.sendMessage("📍 My location: https://maps.google.com/?q=${loc.latitude},${loc.longitude}")
+                                } else {
+                                    android.widget.Toast.makeText(context, "Couldn't get a location fix — try again, ideally outdoors", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                },
+                onAddSharedContact = { name, key -> userViewModel.addContact(name, key) },
+                statuses = statuses,
+                onPostStatus = { text -> userViewModel.postStatus(text) },
+                onPostStatusMedia = { uri, isVideo -> userViewModel.postStatusMedia(uri, isVideo) },
+                onStartCall = { peerId, isVideo -> userViewModel.startCall(peerId, isVideo) },
+                onExportBackup = { out, pwd, cb ->
+                    userViewModel.exportBackup(out, pwd) { r ->
+                        cb(r.success, if (r.success) "Backup saved · ${r.messages} messages, ${r.contacts} contacts, ${r.groups} groups" else r.message)
+                    }
+                },
+                onImportBackup = { input, pwd, cb ->
+                    userViewModel.importBackup(input, pwd) { r ->
+                        cb(r.success, if (r.success) "Restored · ${r.messages} messages, ${r.contacts} contacts, ${r.groups} groups" else r.message)
+                    }
+                }
             )
+
+            // Voice/video call overlay — shown above everything whenever a call is active.
+            // Proximity sensor: blank the screen when the phone is at the ear during a VOICE call
+            // (not video, not speaker), mirroring the stock phone app.
+            val proximityLock = remember { com.firefly.befirefly.utils.ProximityLock(context) }
+            val cs = userViewModel.callState
+            androidx.compose.runtime.LaunchedEffect(cs.phase, cs.isVideo, cs.isSpeakerOn) {
+                val active = cs.phase != com.firefly.befirefly.data.call.CallPhase.IDLE &&
+                        cs.phase != com.firefly.befirefly.data.call.CallPhase.INCOMING &&
+                        !cs.isVideo && !cs.isSpeakerOn
+                if (active) proximityLock.acquire() else proximityLock.release()
+            }
+            androidx.compose.runtime.DisposableEffect(Unit) {
+                onDispose { proximityLock.release() }
+            }
+
+            if (userViewModel.callState.phase != com.firefly.befirefly.data.call.CallPhase.IDLE) {
+                com.firefly.befirefly.ui.screens.CallScreen(
+                    callState = userViewModel.callState,
+                    webRtcManager = userViewModel.webRtcManager,
+                    remoteVideoTrack = userViewModel.remoteVideoTrack,
+                    onAccept = { userViewModel.acceptCall() },
+                    onDecline = { userViewModel.declineCall() },
+                    onEnd = { userViewModel.endCall() },
+                    onToggleMute = { userViewModel.toggleMute() },
+                    onToggleSpeaker = { userViewModel.toggleSpeaker() },
+                    onToggleVideo = { userViewModel.toggleCallVideo() },
+                    onSwitchCamera = { userViewModel.switchCamera() }
+                )
+            }
 
             // NOTE: I passed createIdentity for onAddContact which is WRONG.
             // onAddContact needs to add to DB.

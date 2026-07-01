@@ -22,6 +22,8 @@ import com.firefly.befirefly.ui.components.ChatWindow
 
 // Data Classes
 data class Contact(val id: String, val name: String, val status: String, val imageUrl: String)
+data class GroupMemberUi(val id: String, val name: String, val isAdmin: Boolean)
+data class StatusUi(val authorName: String, val text: String, val timestamp: Long, val isMine: Boolean, val mediaPath: String? = null, val mediaType: String? = null)
 data class Message(
     val id: Long = 0,
     val text: String,

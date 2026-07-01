@@ -11,7 +11,9 @@ import java.util.UUID
 class MqttCloudGateway : CloudGateway {
 
     private var client: MqttAsyncClient? = null
-    private val BROKER_URI = "tcp://broker.emqx.io:1883"
+    // TLS broker — encrypts the transport so the broker operator can't read packet metadata
+    // (sender/receiver topics, timing) in the clear. Payloads are already E2E-encrypted on top.
+    private val BROKER_URI = "ssl://broker.emqx.io:8883"
     private val TOPIC_PREFIX = "befirefly/users/"
     private val TAG = "MqttGateway"
     private val MAX_SAFE_PAYLOAD = 500 * 1024 // 500KB — warn if exceeding

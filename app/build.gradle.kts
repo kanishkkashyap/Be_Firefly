@@ -106,6 +106,12 @@ dependencies {
     // MQTT - Eclipse Paho (Android-native)
     implementation(libs.paho.mqtt.client)
 
+    // WebRTC - voice/video calls (internet only). Community-maintained build of org.webrtc.*
+    implementation(libs.webrtc)
+
+    // Haze - real backdrop blur for glassmorphic surfaces (nav bar)
+    implementation(libs.haze)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

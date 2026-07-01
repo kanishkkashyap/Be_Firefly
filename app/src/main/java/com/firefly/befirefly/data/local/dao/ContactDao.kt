@@ -26,6 +26,9 @@ interface ContactDao {
 
     @Query("UPDATE contacts SET isVerified = :verified WHERE id = :id")
     suspend fun updateVerified(id: String, verified: Boolean)
+
+    @Query("UPDATE contacts SET isBlocked = :blocked WHERE id = :id")
+    suspend fun updateBlocked(id: String, blocked: Boolean)
     
     @Query("DELETE FROM contacts WHERE id = :id")
     suspend fun deleteContact(id: String)

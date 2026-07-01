@@ -10,16 +10,19 @@ import com.firefly.befirefly.data.local.entity.GroupMemberEntity
 import com.firefly.befirefly.data.local.dao.MessageDao
 import com.firefly.befirefly.data.local.dao.ContactDao
 import com.firefly.befirefly.data.local.dao.PendingMessageDao
+import com.firefly.befirefly.data.local.dao.StatusDao
 import com.firefly.befirefly.data.local.entity.MessageEntity
 import com.firefly.befirefly.data.local.entity.ContactEntity
 import com.firefly.befirefly.data.local.entity.PendingMessageEntity
+import com.firefly.befirefly.data.local.entity.StatusEntity
 
-@Database(entities = [MessageEntity::class, ContactEntity::class, GroupEntity::class, GroupMemberEntity::class, PendingMessageEntity::class], version = 10, exportSchema = false)
+@Database(entities = [MessageEntity::class, ContactEntity::class, GroupEntity::class, GroupMemberEntity::class, PendingMessageEntity::class, StatusEntity::class], version = 13, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun contactDao(): ContactDao
     abstract fun groupDao(): GroupDao
     abstract fun pendingMessageDao(): PendingMessageDao
+    abstract fun statusDao(): StatusDao
 
     companion object {
         @Volatile

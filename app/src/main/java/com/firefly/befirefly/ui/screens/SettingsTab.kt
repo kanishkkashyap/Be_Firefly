@@ -43,7 +43,9 @@ fun SettingsTab(
     isCloudConnected: Boolean,
     lastError: String?,
     isDarkTheme: Boolean = true,
-    onThemeToggle: () -> Unit = {}
+    onThemeToggle: () -> Unit = {},
+    onExportBackup: ((java.io.OutputStream, String, (Boolean, String) -> Unit) -> Unit)? = null,
+    onImportBackup: ((java.io.InputStream, String, (Boolean, String) -> Unit) -> Unit)? = null
 ) {
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -53,9 +55,41 @@ fun SettingsTab(
     val appLockManager = remember { com.firefly.befirefly.utils.AppLockManager(context) }
     var isLockEnabled by remember { mutableStateOf(appLockManager.isLockEnabled()) }
     var isBiometricEnabled by remember { mutableStateOf(appLockManager.isBiometricEnabled()) }
+    var hidePreviews by remember {
+        mutableStateOf(context.getSharedPreferences("notif_prefs", android.content.Context.MODE_PRIVATE).getBoolean("hide_previews", false))
+    }
     var showPinSetup by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showDeveloperDialog by remember { mutableStateOf(false) }
+
+    // --- Encrypted backup / restore ---
+    var showBackupPwdDialog by remember { mutableStateOf(false) }
+    var showRestorePwdDialog by remember { mutableStateOf(false) }
+    var backupPassword by remember { mutableStateOf("") }
+    var restorePassword by remember { mutableStateOf("") }
+    var pendingRestoreUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var backupBusy by remember { mutableStateOf(false) }
+
+    fun toast(msg: String) = android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+
+    val exportLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri: android.net.Uri? ->
+        if (uri == null) { backupBusy = false; return@rememberLauncherForActivityResult }
+        try {
+            val out = context.contentResolver.openOutputStream(uri)
+            if (out == null) { toast("Couldn't open file"); backupBusy = false }
+            else onExportBackup?.invoke(out, backupPassword) { ok, msg ->
+                backupBusy = false; backupPassword = ""; toast(msg)
+            }
+        } catch (e: Exception) { backupBusy = false; toast("Backup failed: ${e.message}") }
+    }
+
+    val importPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) { pendingRestoreUri = uri; showRestorePwdDialog = true }
+    }
 
     val settingsItems = listOf(
         SettingItem("🔒", "App Lock",
@@ -68,7 +102,20 @@ fun SettingsTab(
             appLockManager.setBiometricEnabled(newVal)
             isBiometricEnabled = newVal
         },
+        SettingItem("🙈", "Hide Message Previews",
+            if (hidePreviews) "On — notifications won't show content" else "Off — notifications show message text", "p") {
+            val newVal = !hidePreviews
+            context.getSharedPreferences("notif_prefs", android.content.Context.MODE_PRIVATE)
+                .edit().putBoolean("hide_previews", newVal).apply()
+            hidePreviews = newVal
+        },
         SettingItem("ℹ️", "About BeFirefly", "Version 2.0 (Aurora Edition)", "b") { showAboutDialog = true },
+        SettingItem("💾", "Backup Chats", "Save an encrypted backup file", "gr") {
+            if (backupBusy) toast("Backup in progress…") else showBackupPwdDialog = true
+        },
+        SettingItem("♻️", "Restore Backup", "Import from an encrypted backup file", "gr") {
+            importPickerLauncher.launch("application/zip")
+        },
         SettingItem("👨‍💻", "Developer", "Kanishk Kashyap (HS Walker)", "p") { showDeveloperDialog = true },
         SettingItem("🔐", "Privacy and Security", "Passcode, Two-Step Verification", "p") {},
         SettingItem("🔔", "Notifications", "Sounds, Calls, Badges", "p") {},
@@ -152,6 +199,102 @@ fun SettingsTab(
             },
             confirmButton = {
                 TextButton(onClick = { showDeveloperDialog = false }) { Text("Close", color = AuroraColors.Teal) }
+            }
+        )
+    }
+
+    if (showBackupPwdDialog) {
+        AlertDialog(
+            onDismissRequest = { showBackupPwdDialog = false },
+            containerColor = Color(0xFF0A0E27),
+            shape = RoundedCornerShape(24.dp),
+            title = { AuroraGradientText("Encrypt Backup", fontSize = 20.sp) },
+            text = {
+                Column {
+                    Text(
+                        "Choose a password. You'll need it to restore — we can't recover it for you.",
+                        color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp, lineHeight = 18.sp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = backupPassword,
+                        onValueChange = { backupPassword = it },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Password),
+                        label = { Text("Password", color = Color.White.copy(alpha = 0.5f)) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                            focusedBorderColor = AuroraColors.Teal, unfocusedBorderColor = Color.White.copy(alpha = 0.2f)
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = backupPassword.length >= 4,
+                    onClick = {
+                        showBackupPwdDialog = false
+                        backupBusy = true
+                        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
+                        exportLauncher.launch("befirefly-backup-$stamp.zip")
+                    }
+                ) { Text("Create", color = AuroraColors.Teal) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackupPwdDialog = false; backupPassword = "" }) { Text("Cancel", color = Color.White.copy(alpha = 0.5f)) }
+            }
+        )
+    }
+
+    if (showRestorePwdDialog) {
+        AlertDialog(
+            onDismissRequest = { showRestorePwdDialog = false; pendingRestoreUri = null },
+            containerColor = Color(0xFF0A0E27),
+            shape = RoundedCornerShape(24.dp),
+            title = { AuroraGradientText("Restore Backup", fontSize = 20.sp) },
+            text = {
+                Column {
+                    Text(
+                        "Enter the password used to create this backup. Restored chats merge into your current data.",
+                        color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp, lineHeight = 18.sp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = restorePassword,
+                        onValueChange = { restorePassword = it },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Password),
+                        label = { Text("Password", color = Color.White.copy(alpha = 0.5f)) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                            focusedBorderColor = AuroraColors.Teal, unfocusedBorderColor = Color.White.copy(alpha = 0.2f)
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = restorePassword.isNotEmpty(),
+                    onClick = {
+                        val uri = pendingRestoreUri
+                        showRestorePwdDialog = false
+                        if (uri != null) {
+                            try {
+                                val input = context.contentResolver.openInputStream(uri)
+                                if (input == null) toast("Couldn't open file")
+                                else onImportBackup?.invoke(input, restorePassword) { ok, msg ->
+                                    restorePassword = ""; toast(msg)
+                                }
+                            } catch (e: Exception) { toast("Restore failed: ${e.message}") }
+                        }
+                        pendingRestoreUri = null
+                    }
+                ) { Text("Restore", color = AuroraColors.Teal) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestorePwdDialog = false; restorePassword = ""; pendingRestoreUri = null }) { Text("Cancel", color = Color.White.copy(alpha = 0.5f)) }
             }
         )
     }

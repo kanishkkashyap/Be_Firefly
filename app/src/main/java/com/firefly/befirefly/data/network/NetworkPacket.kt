@@ -40,7 +40,14 @@ enum class PacketType {
     EDIT,       // Edit the text of a previously sent message
     DELETE,     // Delete a message for everyone
     TYPING,     // Typing indicator (ephemeral, not persisted)
-    DISAPPEARING // Set/clear the disappearing-message timer for a conversation
+    DISAPPEARING, // Set/clear the disappearing-message timer for a conversation
+    STATUS,      // Ephemeral status/story broadcast to contacts
+    STATUS_MEDIA, // Photo/video story, sent as encrypted chunks (reuses media pipeline)
+    CALL_OFFER,  // WebRTC SDP offer (start a call) — internet only
+    CALL_ANSWER, // WebRTC SDP answer (accept a call)
+    CALL_ICE,    // WebRTC ICE candidate exchange
+    CALL_END,    // Hang up / decline / cancel a call
+    CALL_BUSY    // Callee is already in another call
 }
 
 object PacketSerializer {
